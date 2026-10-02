@@ -1,0 +1,48 @@
+name    = "complex"
+base    = "/srv/sites/complex"
+domains = ["complex.example.org"]
+id      = 42
+
+[core]
+wordpress = "7.1.2"
+php       = "8.4"
+languages = ["de_DE", "hr"]
+
+[config]
+constants = { WP_DEBUG = false, WP_MEMORY_LIMIT = "256M", EMPTY_TRASH_DAYS = 7, SITE_NOTE = "it's \\ quoted" }
+
+[php]
+memory_limit       = "512M"
+max_execution_time = 300
+disable_functions  = ["exec", "system"]
+fpm = { max_children = 8, start_servers = 2, min_spare = 1, max_spare = 4 }
+
+[[plugin]]
+slug     = "wp-rocket"
+source   = { url = "https://downloads.example.org/wp-rocket_3.17.zip" }
+sha256   = "0000000000000000000000000000000000000000000000000000000000000000"
+writable = ["wp-content/cache", "wp-content/wp-rocket-config"]
+cache    = ["wp-content/cache/wp-rocket"]
+
+[[plugin]]
+slug    = "redis-cache"
+version = "2.6.0"
+
+[[plugin]]
+slug   = "site-tweaks"
+mu     = true
+source = { path = "/srv/iwp/src/complex/site-tweaks.php" }
+sha256 = "1111111111111111111111111111111111111111111111111111111111111111"
+
+[[theme]]
+slug   = "custom-theme"
+source = { git = "https://git.example.org/custom-theme.git", rev = "2222222222222222222222222222222222222222" }
+sha256 = "3333333333333333333333333333333333333333333333333333333333333333"
+writable = ["wp-content/et-cache"]
+
+[dropins]
+"object-cache.php" = { plugin = "redis-cache", file = "includes/object-cache.php" }
+"advanced-cache.php" = { plugin = "wp-rocket", file = "inc/advanced-cache.php" }
+
+[nginx]
+php_entrypoints = ["/wp-content/plugins/wp-rocket/inc/front/process.php"]

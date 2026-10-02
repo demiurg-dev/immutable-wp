@@ -1,0 +1,16 @@
+# Minimal single-site example
+name    = "simple"
+domains = ["www.example.org"]
+id      = 1
+
+[core]
+wordpress = "7.1.2"
+php       = "8.3"
+
+[[plugin]]
+slug    = "gutena-tabs"
+version = "1.0.11"
+
+[[theme]]
+slug    = "twentytwentyfive"
+version = "1.3"

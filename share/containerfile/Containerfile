@@ -1,0 +1,75 @@
+# Built by `iwp image build`. Targets: production (php-fpm) and maintenance (+ wp-cli).
+ARG PHP_VERSION=8.3
+
+# Stage 1: compile the PHP extensions. Compilers and -dev packages stay in this stage only.
+FROM docker.io/library/php:${PHP_VERSION}-fpm-trixie AS ext-builder
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libzip-dev libpng-dev libjpeg62-turbo-dev libfreetype-dev libicu-dev \
+      libwebp-dev libavif-dev libmagickwand-dev libldap-dev \
+    && rm -rf /var/lib/apt/lists/*
+RUN docker-php-ext-configure ldap --with-libdir=lib/x86_64-linux-gnu \
+    && docker-php-ext-install -j"$(nproc)" ldap
+# opcache is compiled into PHP from 8.5 on; older versions build it as an extension.
+RUN docker-php-ext-configure gd --with-freetype --with-jpeg --with-webp --with-avif \
+    && docker-php-ext-install -j"$(nproc)" mysqli pdo_mysql intl zip exif gd \
+    && { php -m | grep -qx 'Zend OPcache' || docker-php-ext-install -j"$(nproc)" opcache; } \
+    && pecl install imagick-3.8.1 && docker-php-ext-enable imagick
+# The runtime packages are whatever the compiled extensions link against, so the list follows
+# the Debian release instead of being spelled out here. (The `*/` pattern finds a library under
+# both /lib and /usr/lib, whichever path dpkg recorded.)
+RUN ldd /usr/local/lib/php/extensions/*/*.so \
+      | awk '/=> \// { so = $(NF-1); gsub("^/(usr/)?", "", so); print "*/" so }' | sort -u \
+      | xargs -r dpkg-query --search | cut -d: -f1 | sort -u > /runtime-packages \
+    && test -s /runtime-packages
+
+# Stage 2: clean runtime. Only the compiled extensions and their runtime libraries; the
+# build tools the official php image ships ($PHPIZE_DEPS: gcc, make, ...) are purged.
+FROM docker.io/library/php:${PHP_VERSION}-fpm-trixie AS base
+
+ARG WORDPRESS_VERSION
+ARG WORDPRESS_SHA1
+
+COPY --from=ext-builder /runtime-packages /tmp/runtime-packages
+RUN apt-get update && xargs -r apt-get install -y --no-install-recommends < /tmp/runtime-packages \
+    && apt-get purge -y --auto-remove $PHPIZE_DEPS \
+    && rm -rf /var/lib/apt/lists/* /tmp/runtime-packages
+COPY --from=ext-builder /usr/local/lib/php/extensions/ /usr/local/lib/php/extensions/
+COPY --from=ext-builder /usr/local/etc/php/conf.d/ /usr/local/etc/php/conf.d/
+# Fail the build if an extension lacks a runtime library or a compiler survived.
+RUN for so in /usr/local/lib/php/extensions/*/*.so; do \
+      if ldd "$so" | grep -q 'not found'; then echo "$so: missing library" >&2; ldd "$so" >&2; exit 1; fi; \
+    done \
+    && for t in gcc cc g++ make cpp ld as; do if command -v "$t" >/dev/null; then echo "compiler tool $t present" >&2; exit 1; fi; done \
+    && php -m | grep -qx imagick && php -m | grep -qx gd && php -m | grep -qx ldap \
+    && php -m | grep -qx 'Zend OPcache'
+
+COPY php.ini /usr/local/etc/php/conf.d/10-iwp.ini
+COPY fpm-pool.conf /usr/local/etc/php-fpm.d/zz-docker.conf
+
+RUN curl -fsSL -o /tmp/wordpress.tar.gz "https://wordpress.org/wordpress-${WORDPRESS_VERSION}.tar.gz" \
+    && echo "${WORDPRESS_SHA1}  /tmp/wordpress.tar.gz" | sha1sum -c - \
+    && tar -xzf /tmp/wordpress.tar.gz --strip-components=1 -C /var/www/html \
+    && rm /tmp/wordpress.tar.gz \
+    && rm -rf /var/www/html/wp-content/plugins/* /var/www/html/wp-content/themes/* \
+    && mkdir -p /var/www/html/wp-content/uploads /var/www/html/wp-content/languages \
+                /var/www/html/wp-content/mu-plugins /etc/iwp /run/iwp
+COPY wp-config.php /var/www/html/wp-config.php
+RUN chown -R root:root /var/www/html \
+    && find /var/www/html -type d -exec chmod 755 {} + \
+    && find /var/www/html -type f -exec chmod 644 {} +
+
+FROM base AS production
+USER www-data
+CMD ["php-fpm", "-F"]
+
+FROM base AS maintenance
+ARG WPCLI_VERSION
+ARG WPCLI_SHA512
+RUN apt-get update && apt-get install -y --no-install-recommends less mariadb-client \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL -o /usr/local/bin/wp \
+         "https://github.com/wp-cli/wp-cli/releases/download/v${WPCLI_VERSION}/wp-cli-${WPCLI_VERSION}.phar" \
+    && echo "${WPCLI_SHA512}  /usr/local/bin/wp" | sha512sum -c - \
+    && chmod 755 /usr/local/bin/wp
+USER www-data
+CMD ["bash"]

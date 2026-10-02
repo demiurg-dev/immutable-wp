@@ -1,0 +1,569 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Site",
+  "type": "object",
+  "properties": {
+    "base": {
+      "description": "Base directory; default <base_root>/<name>.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "config": {
+      "$ref": "#/$defs/WpConfig",
+      "default": {}
+    },
+    "core": {
+      "$ref": "#/$defs/Core"
+    },
+    "database": {
+      "$ref": "#/$defs/DatabaseSettings"
+    },
+    "domains": {
+      "description": "Domains served by this site (used for the nginx include comment and smoke tests).",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "dropins": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/Dropin"
+      }
+    },
+    "id": {
+      "description": "Host-unique slot 1..=511; determines UID/GID range and SELinux categories.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "limits": {
+      "$ref": "#/$defs/LimitSettings"
+    },
+    "name": {
+      "description": "Site name: ^[a-z][a-z0-9-]{0,30}$; must equal the file stem.",
+      "type": "string"
+    },
+    "nginx": {
+      "$ref": "#/$defs/NginxSettings",
+      "default": {}
+    },
+    "php": {
+      "$ref": "#/$defs/PhpSettings",
+      "default": {
+        "cron": "fpm",
+        "disable_functions": [
+          "exec",
+          "shell_exec",
+          "system",
+          "passthru",
+          "proc_open",
+          "popen"
+        ],
+        "fpm": {
+          "max_children": 10,
+          "max_spare": 3,
+          "min_spare": 1,
+          "start_servers": 2
+        },
+        "max_execution_time": 120,
+        "memory_limit": "256M",
+        "post_max_size": "64M",
+        "upload_max_filesize": "64M"
+      }
+    },
+    "plugin": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Package"
+      }
+    },
+    "theme": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Package"
+      }
+    },
+    "update": {
+      "$ref": "#/$defs/UpdateSettings"
+    },
+    "verify": {
+      "$ref": "#/$defs/VerifySettings"
+    },
+    "wpcli": {
+      "$ref": "#/$defs/WpcliSettings"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "domains",
+    "id",
+    "core"
+  ],
+  "$defs": {
+    "ConstValue": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "integer",
+          "format": "int64"
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "Core": {
+      "type": "object",
+      "properties": {
+        "languages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "php": {
+          "type": "string"
+        },
+        "wordpress": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "wordpress",
+        "php"
+      ]
+    },
+    "CorePolicy": {
+      "type": "string",
+      "enum": [
+        "none",
+        "minor",
+        "major"
+      ]
+    },
+    "CronMode": {
+      "type": "string",
+      "enum": [
+        "fpm",
+        "cli"
+      ]
+    },
+    "DatabaseSettings": {
+      "type": "object",
+      "properties": {
+        "charset": {
+          "description": "DB_CHARSET: utf8mb4 (default), utf8 or utf8mb3.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "collate": {
+          "description": "DB_COLLATE; default \"\". ^[a-z0-9_]*$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Existing or new database name; default wp_<site with - → _>. ^[A-Za-z0-9_]{1,64}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prefix": {
+          "description": "$table_prefix; default \"wp_\". ^[A-Za-z0-9_]+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "user": {
+          "description": "MariaDB user iwp creates/updates at the podman subnet; default iwp_<site>. Never an\naccount another application uses. ^[A-Za-z0-9_]{1,64}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Dropin": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "type": "string"
+        },
+        "plugin": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "plugin",
+        "file"
+      ]
+    },
+    "FpmSettings": {
+      "type": "object",
+      "properties": {
+        "max_children": {
+          "type": "integer",
+          "format": "uint32",
+          "default": 10,
+          "minimum": 0
+        },
+        "max_spare": {
+          "type": "integer",
+          "format": "uint32",
+          "default": 3,
+          "minimum": 0
+        },
+        "min_spare": {
+          "type": "integer",
+          "format": "uint32",
+          "default": 1,
+          "minimum": 0
+        },
+        "start_servers": {
+          "type": "integer",
+          "format": "uint32",
+          "default": 2,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "LimitSettings": {
+      "type": "object",
+      "properties": {
+        "memory": {
+          "description": "Memory ceiling of the site's container (systemd MemoryMax); default\nphp.fpm.max_children x php.memory_limit + tmp_size + 384M.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tmp_size": {
+          "description": "Size of the container's /tmp (a tmpfs, so it counts against `memory`); default \"1G\", or\nphp.post_max_size when that is larger. Must hold a request body: >= php.post_max_size.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Multisite": {
+      "type": "object",
+      "properties": {
+        "blog_id": {
+          "description": "BLOG_ID_CURRENT_SITE; default 1 (a positive integer).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "domain": {
+          "description": "DOMAIN_CURRENT_SITE; must be one of `domains`.",
+          "type": "string"
+        },
+        "path": {
+          "description": "PATH_CURRENT_SITE; default \"/\". Starts and ends with `/`; segments of\n`A-Za-z0-9._~-` not starting with `.`.",
+          "type": "string"
+        },
+        "site_id": {
+          "description": "SITE_ID_CURRENT_SITE; default 1 (a positive integer).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "subdomain": {
+          "description": "Only subdomain installs are supported in v1.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "subdomain",
+        "domain"
+      ]
+    },
+    "NginxSettings": {
+      "type": "object",
+      "properties": {
+        "php_entrypoints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "Package": {
+      "type": "object",
+      "properties": {
+        "cache": {
+          "description": "Cache dirs (must be inside a writable dir); emptied on deploy.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "hold": {
+          "description": "Keep this version: `iwp update` leaves the package alone and never reports it as\noverdue (wordpress.org packages) or due for review (`source` packages).",
+          "type": "boolean"
+        },
+        "mu": {
+          "description": "Install into mu-plugins/ (plugins only).",
+          "type": "boolean"
+        },
+        "sha256": {
+          "description": "Required with `source`: archive SHA-256 (url) or tree hash (path/git).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "slug": {
+          "type": "string"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Source"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "version": {
+          "description": "wordpress.org version (mutually exclusive with `source`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "writable": {
+          "description": "Extra writable dirs under wp-content/ (moved to shared/, PHP denied by nginx).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "slug"
+      ]
+    },
+    "PackagePolicy": {
+      "type": "string",
+      "enum": [
+        "none",
+        "minor",
+        "major"
+      ]
+    },
+    "PhpSettings": {
+      "type": "object",
+      "properties": {
+        "cron": {
+          "description": "How the cron timer runs WP-Cron: \"fpm\" (default; a request to wp-cron.php over the FPM\nsocket, bounded by max_execution_time like any request) or \"cli\" (wp-cli in its own\ncontainer, no time limit; for sites with long-running events). Networks always use cli.",
+          "$ref": "#/$defs/CronMode",
+          "default": "fpm"
+        },
+        "disable_functions": {
+          "type": "array",
+          "default": [
+            "exec",
+            "shell_exec",
+            "system",
+            "passthru",
+            "proc_open",
+            "popen"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "fpm": {
+          "$ref": "#/$defs/FpmSettings",
+          "default": {
+            "max_children": 10,
+            "max_spare": 3,
+            "min_spare": 1,
+            "start_servers": 2
+          }
+        },
+        "max_execution_time": {
+          "type": "integer",
+          "format": "uint32",
+          "default": 120,
+          "minimum": 0
+        },
+        "memory_limit": {
+          "type": "string",
+          "default": "256M"
+        },
+        "post_max_size": {
+          "type": "string",
+          "default": "64M"
+        },
+        "upload_max_filesize": {
+          "type": "string",
+          "default": "64M"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Source": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "path"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "git": {
+              "type": "string"
+            },
+            "rev": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "git",
+            "rev"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "url"
+          ]
+        }
+      ]
+    },
+    "UpdateSettings": {
+      "description": "What `iwp update` may change in this site file.",
+      "type": "object",
+      "properties": {
+        "auto": {
+          "description": "Include this site in `iwp update --all` (the update timer); default true.",
+          "type": "boolean",
+          "default": true
+        },
+        "core": {
+          "description": "Core updates: \"minor\" (default; patch releases of the current x.y branch), \"major\"\n(the latest release) or \"none\".",
+          "$ref": "#/$defs/CorePolicy",
+          "default": "minor"
+        },
+        "overdue_days": {
+          "description": "Days an update that `iwp update` does not take on its own (a major one, or one that\nneeds a newer PHP or WordPress) may stay available before the run fails because of it;\ndefault 30, 0: never. `hold = true` on the package accepts its version.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 30,
+          "minimum": 0
+        },
+        "plugins": {
+          "description": "Plugin and theme updates: \"minor\" (default; only versions with the same first number,\ne.g. 4.2 -> 4.9 but not 4.9 -> 5.0; versions that are not plain dotted numbers count as\nmajor), \"major\" (the latest release) or \"none\". Plugin database migrations run on the\nfirst request after a deploy and are not undone by a code rollback.",
+          "$ref": "#/$defs/PackagePolicy",
+          "default": "minor"
+        },
+        "source_review_days": {
+          "description": "Days a `source` package (path, git, url: iwp cannot look for its updates) may keep the\nsame pin before the run fails and asks for a review; default 90, 0: never.\n`hold = true` on the package accepts it as it is.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 90,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "VerifySettings": {
+      "description": "What `iwp verify` accepts.",
+      "type": "object",
+      "properties": {
+        "admins": {
+          "description": "Logins of the accounts that may be administrators (on a network: of any site, and the\nsuper admins). When set, `iwp verify` reports every other administrator as a finding;\nunset, it only lists them. Read from the site file, not the deployed snapshot, so a\nchange needs no deploy.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_php": {
+          "description": "PHP-like files (`*.php`, `.htaccess`, ...) that may exist in shared data, as globs relative\nto the WordPress root (`*` and `?` match within one path segment), e.g.\n\"wp-content/wflogs/*.php\" for Wordfence. Each must lie under a declared writable path;\nwp-content/uploads can never be allowlisted.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "WpConfig": {
+      "type": "object",
+      "properties": {
+        "constants": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/ConstValue"
+          }
+        },
+        "multisite": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Multisite"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "WpcliSettings": {
+      "type": "object",
+      "properties": {
+        "mounts": {
+          "description": "Host directories mounted read-only at the same path for `iwp wp`/`iwp shell` only.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

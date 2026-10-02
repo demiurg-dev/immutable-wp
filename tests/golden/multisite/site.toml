@@ -1,0 +1,32 @@
+name    = "acme"
+base    = "/var/www/vhosts/example.org/iwp"
+domains = ["www.example.org", "shop.example.org", "dev.example.org"]
+id      = 3
+
+[core]
+wordpress = "7.1.2"
+php       = "8.3"
+languages = ["hr"]
+
+[config]
+multisite = { subdomain = true, domain = "www.example.org" }
+constants = { WP_DEBUG = false, WFWAF_STORAGE_ENGINE = "mysqli" }
+
+[php]
+memory_limit        = "256M"
+upload_max_filesize = "256M"
+post_max_size       = "256M"
+fpm = { max_children = 20, start_servers = 4, min_spare = 2, max_spare = 6 }
+
+[[plugin]]
+slug    = "gutena-tabs"
+version = "1.0.11"   # WP 6.9+ compatible
+
+[[plugin]]
+slug     = "wordfence"
+version  = "8.1.0"
+writable = ["wp-content/wflogs"]
+
+[[theme]]
+slug    = "hello-elementor"
+version = "3.4.4"

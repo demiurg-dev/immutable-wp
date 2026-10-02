@@ -1,0 +1,22 @@
+# iwp global configuration. Every setting is optional; the values shown are the defaults.
+# See /usr/share/doc/iwp/operations.md.
+
+#sites_dir      = "/etc/iwp/sites"
+#cache_dir      = "/var/cache/iwp"
+#base_root      = "/var/www/vhosts"
+#keep_releases  = 5
+#keep_db_dumps  = 10
+#podman_network = "podman"
+#mariadb_socket = "/var/lib/mysql/mysql.sock"
+#nginx_group    = "nginx"
+#id_offset      = 100000
+
+# Mail the journal of a failed verify or update run (needs a working sendmail on the host).
+#alert_email = "ops@example.org"
+
+# What site containers may connect to; load with `iwp egress apply`.
+#[egress]
+#restrict = false
+#ports    = [80, 443, 465, 587]
+#db_port  = 3306
+#allow    = []          # "<ipv4>[/<prefix>]:<tcp port>"

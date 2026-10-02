@@ -1,0 +1,21 @@
+module iwp 1.1;
+
+# Host nginx (httpd_t) serves iwp release/shared files labelled for per-site containers
+# and connects to each site's php-fpm unix socket.
+require {
+	type container_file_t;
+	type container_t;
+	type httpd_t;
+	class file { getattr open read };
+	class dir { getattr open read search };
+	class lnk_file { getattr read };
+	class sock_file write;
+	class unix_stream_socket connectto;
+}
+
+allow httpd_t container_file_t:file { getattr open read };
+allow httpd_t container_file_t:dir { getattr open read search };
+# getattr: the include's disable_symlinks check compares a link's owner with its target's.
+allow httpd_t container_file_t:lnk_file { getattr read };
+allow httpd_t container_file_t:sock_file write;
+allow httpd_t container_t:unix_stream_socket connectto;
