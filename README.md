@@ -73,6 +73,8 @@ Operations runbook: [`docs/operations.md`](docs/operations.md).
 iwp validate [<site>…]                 check site files (exit 2 on problems)
 iwp render <site> --out <dir>          write every generated file (quadlet, nginx, wp-config, php, timers)
 iwp plugin|theme add|set|rm <site> …   edit a site file, keeping comments
+iwp plugin|theme add <site> <slug> --url <zip-url> | --path <dir>
+                                       add a source from elsewhere, pinned to its sha256
 iwp image build <wp> <php> [--refresh-base]   build verified fpm/cli images
 iwp image list | prune                        show / remove iwp images
 iwp build <site>                              build a verified, read-only release (not activated yet)

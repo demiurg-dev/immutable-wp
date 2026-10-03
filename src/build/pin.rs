@@ -7,7 +7,8 @@ use anyhow::{Context, Result};
 use crate::build::sources::{SourceCtx, source_hash};
 use crate::cli::UsageError;
 use crate::config::edit::{PackageKind, edit_site_file};
-use crate::config::{parse_site, validate_site};
+use crate::config::validate::{source_issue, valid_slug};
+use crate::config::{Package, Source, parse_site, validate_site};
 
 pub fn pin(
     ctx: &SourceCtx,
@@ -91,6 +92,61 @@ pub fn pin(
         .into_iter()
         .map(|(k, s, h)| (k.table().to_string(), s, h))
         .collect())
+}
+
+/// `iwp plugin|theme add <site> <slug> --url <url> | --path <dir>`: hash the source and add
+/// it to the site file as a pinned `source` package. Nothing is fetched or written when the
+/// slug or source is invalid or the slug is already in the site file.
+pub fn add_source(
+    ctx: &SourceCtx,
+    site_path: &Path,
+    kind: PackageKind,
+    slug: &str,
+    source: Source,
+) -> Result<String> {
+    let usage = |e: anyhow::Error| anyhow::Error::new(UsageError(format!("{e:#}")));
+    let table = kind.table();
+    if !valid_slug(slug) {
+        return Err(UsageError(format!("invalid {table} slug {slug:?}")).into());
+    }
+    if let Some(msg) = source_issue(&source) {
+        return Err(UsageError(msg.to_string()).into());
+    }
+    if let Source::Path { path } = &source
+        && !std::fs::symlink_metadata(path).is_ok_and(|m| m.is_dir())
+    {
+        return Err(UsageError(format!("{} is not a directory", path.display())).into());
+    }
+    let text = std::fs::read_to_string(site_path)
+        .with_context(|| format!("reading {}", site_path.display()))?;
+    let site = parse_site(&text).map_err(usage)?;
+    let existing = match kind {
+        PackageKind::Plugin => &site.plugins,
+        PackageKind::Theme => &site.themes,
+    };
+    if existing.iter().any(|p| p.slug == slug) {
+        return Err(UsageError(format!("{table}[{slug}] already exists")).into());
+    }
+    let stem = site_path.file_stem().and_then(|s| s.to_str());
+    let issues = validate_site(&site, stem);
+    if !issues.is_empty() {
+        let list: Vec<String> = issues.iter().map(ToString::to_string).collect();
+        return Err(UsageError(list.join("\n")).into());
+    }
+    let p = Package {
+        slug: slug.to_string(),
+        version: None,
+        source: Some(source),
+        sha256: None,
+        writable: vec![],
+        cache: vec![],
+        mu: false,
+        hold: false,
+    };
+    let sha = source_hash(ctx, &p).with_context(|| format!("{table}[{slug}]"))?;
+    let source = p.source.as_ref().expect("set above");
+    edit_site_file(site_path, |d| d.add_source(kind, slug, source, &sha)).map_err(usage)?;
+    Ok(sha)
 }
 
 #[cfg(test)]
@@ -246,6 +302,117 @@ version = "1.0.11"
                 tree_hash(&a).unwrap()
             )]
         );
+    }
+
+    const VURL: &str = "https://vendor.example/prem-1.2.zip";
+
+    fn vurl() -> Source {
+        Source::Url { url: VURL.into() }
+    }
+
+    #[test]
+    fn add_url_fetches_pins_and_builds_without_refetch() {
+        use crate::testutil::make_zip;
+        let t = tmp();
+        let (file, _, _) = two_sources(t.path(), true);
+        let zip = make_zip(&[("prem/prem.php", b"<?php")]);
+        let f = FakeFetcher::new().with(VURL, zip.clone());
+        let cache = Cache::new(&t.path().join("cache"));
+        let ctx = ctx_for(t.path(), &f, &cache);
+        pin(&ctx, &file, None).unwrap();
+        let sha = add_source(&ctx, &file, PackageKind::Theme, "prem", vurl()).unwrap();
+        assert_eq!(sha, crate::hash::sha256_hex(&zip));
+        let site = parse_site(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(site.themes.len(), 1);
+        assert_eq!(site.themes[0].slug, "prem");
+        assert_eq!(site.themes[0].source, Some(vurl()));
+        assert_eq!(site.themes[0].sha256.as_deref(), Some(sha.as_str()));
+        crate::build::sources::stage_package(
+            &ctx,
+            PackageKind::Theme,
+            &site.themes[0],
+            &t.path().join("out"),
+        )
+        .unwrap();
+        assert_eq!(f.calls().len(), 1, "build must not refetch after add");
+    }
+
+    #[test]
+    fn add_path_pins_the_tree_hash() {
+        let t = tmp();
+        let (file, _, _) = two_sources(t.path(), true);
+        let dir = t.path().join("ours");
+        std::fs::create_dir_all(dir.join("inc")).unwrap();
+        std::fs::write(dir.join("inc/x.php"), "<?php").unwrap();
+        let f = FakeFetcher::new();
+        let cache = Cache::new(&t.path().join("cache"));
+        let ctx = ctx_for(t.path(), &f, &cache);
+        pin(&ctx, &file, None).unwrap();
+        let src = Source::Path { path: dir.clone() };
+        let sha = add_source(&ctx, &file, PackageKind::Plugin, "ours", src.clone()).unwrap();
+        assert_eq!(sha, tree_hash(&dir).unwrap());
+        let site = parse_site(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        let p = site.plugins.last().unwrap();
+        assert_eq!((p.slug.as_str(), p.source.as_ref()), ("ours", Some(&src)));
+        assert_eq!(p.sha256.as_deref(), Some(sha.as_str()));
+        assert!(validate_site(&site, Some("s")).is_empty());
+    }
+
+    #[test]
+    fn add_source_refuses_before_fetching_or_writing() {
+        let t = tmp();
+        let (file, _, _) = two_sources(t.path(), true);
+        let before = std::fs::read_to_string(&file).unwrap();
+        let regular = t.path().join("one.php");
+        std::fs::write(&regular, "<?php").unwrap();
+        let url = |u: &str| Source::Url { url: u.into() };
+        let path = |p: &Path| Source::Path { path: p.into() };
+        let f = FakeFetcher::new();
+        let cache = Cache::new(&t.path().join("cache"));
+        let ctx = ctx_for(t.path(), &f, &cache);
+        for (slug, source, want) in [
+            ("a", vurl(), "plugin[a] already exists"),
+            // the site file itself is invalid: `a` is not pinned yet
+            ("prem", vurl(), "plugin[a].sha256"),
+            ("prem", url("http://vendor.example/p.zip"), "url must be"),
+            (
+                "prem",
+                url("https://vendor.example/p.zip?x=1"),
+                "url must be",
+            ),
+            ("../prem", vurl(), "invalid plugin slug"),
+            ("prem", path(Path::new("rel/dir")), "path must be absolute"),
+            ("prem", path(&regular), "is not a directory"),
+            (
+                "prem",
+                path(&t.path().join("missing")),
+                "is not a directory",
+            ),
+        ] {
+            let err = add_source(&ctx, &file, PackageKind::Plugin, slug, source).unwrap_err();
+            assert!(
+                err.downcast_ref::<crate::cli::UsageError>().is_some(),
+                "{err:#}"
+            );
+            assert!(err.to_string().contains(want), "{err}");
+        }
+        assert!(f.calls().is_empty());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
+    }
+
+    #[test]
+    fn add_url_with_wrong_top_level_directory_leaves_the_file_alone() {
+        use crate::testutil::make_zip;
+        let t = tmp();
+        let (file, _, _) = two_sources(t.path(), true);
+        let f = FakeFetcher::new().with(VURL, make_zip(&[("other/a.php", b"x")]));
+        let cache = Cache::new(&t.path().join("cache"));
+        let ctx = ctx_for(t.path(), &f, &cache);
+        pin(&ctx, &file, None).unwrap();
+        let before = std::fs::read_to_string(&file).unwrap();
+        let err = add_source(&ctx, &file, PackageKind::Plugin, "prem", vurl()).unwrap_err();
+        assert!(format!("{err:#}").contains("expected \"prem\""), "{err:#}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
     }
 
     #[test]

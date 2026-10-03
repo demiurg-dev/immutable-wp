@@ -678,16 +678,20 @@ fn check_source(c: &mut Collector, f: &str, p: &Package, src: &Source) {
         }
         _ => {}
     }
-    let bad = match src {
+    if let Some(msg) = source_issue(src) {
+        c.err(format!("{f}.source"), msg);
+    }
+}
+
+/// What is wrong with a `source` (the site-file rule), if anything.
+pub fn source_issue(src: &Source) -> Option<&'static str> {
+    match src {
         Source::Path { path } => (!is_clean_absolute(path))
             .then_some("path must be absolute with components matching [A-Za-z0-9][A-Za-z0-9._-]*"),
         Source::Git { git, rev } => (!GIT_URL.is_match(git) || !GIT_REV.is_match(rev))
             .then_some("git must be https:// or git@ URL and rev a full 40-hex commit"),
         Source::Url { url } => (!URL.is_match(url))
             .then_some("url must be https:// without query or special characters"),
-    };
-    if let Some(msg) = bad {
-        c.err(format!("{f}.source"), msg);
     }
 }
 

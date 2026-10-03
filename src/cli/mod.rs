@@ -276,8 +276,20 @@ pub struct PackageArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum PackageAction {
-    /// Add a wordpress.org package: <site> <slug>@<version>
-    Add { site: String, spec: String },
+    /// Add a wordpress.org package: <site> <slug>@<version>, or a pinned source:
+    /// <site> <slug> --url <url> | --path <dir>
+    Add {
+        site: String,
+        spec: String,
+        /// Download this https zip (its top-level directory named after the slug) and add it
+        /// as a `url` source pinned to its sha256
+        #[arg(long, conflicts_with = "path")]
+        url: Option<String>,
+        /// Add this directory as a `path` source pinned to its tree hash (read again at
+        /// every build)
+        #[arg(long)]
+        path: Option<PathBuf>,
+    },
     /// Change the pinned version: <site> <slug>@<version>
     Set { site: String, spec: String },
     /// Remove a package: <site> <slug>
@@ -324,8 +336,8 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
     }
     let global = load_global(cli.config.as_deref())?;
     match cli.command {
-        Command::Plugin(a) => sitefile::package(&global.sites_dir, PackageKind::Plugin, a.action),
-        Command::Theme(a) => sitefile::package(&global.sites_dir, PackageKind::Theme, a.action),
+        Command::Plugin(a) => sitefile::package(&global, PackageKind::Plugin, a.action),
+        Command::Theme(a) => sitefile::package(&global, PackageKind::Theme, a.action),
         Command::Validate { sites } => sitefile::validate_cmd(&global, &sites),
         Command::Render {
             site,

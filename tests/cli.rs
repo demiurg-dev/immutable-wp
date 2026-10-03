@@ -163,6 +163,77 @@ fn plugin_add_requires_version() {
 }
 
 #[test]
+fn plugin_add_path_pins_the_directory() {
+    let (dir, global) = sites_env();
+    let text = std::fs::read_to_string(&global).unwrap();
+    let cache = dir.path().join("cache");
+    std::fs::write(&global, format!("{text}cache_dir = {cache:?}\n")).unwrap();
+    let src = dir.path().join("ours");
+    std::fs::create_dir(&src).unwrap();
+    std::fs::write(src.join("ours.php"), "<?php").unwrap();
+    let out = iwp()
+        .arg("--config")
+        .arg(&global)
+        .args(["plugin", "add", "acme", "ours", "--path"])
+        .arg(&src)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).starts_with("pinned plugin[ours] "));
+    let text = std::fs::read_to_string(dir.path().join("sites/acme.toml")).unwrap();
+    assert!(
+        text.contains(&format!("source = {{ path = {:?} }}", src)) && text.contains("sha256 = "),
+        "{text}"
+    );
+    let out = iwp()
+        .arg("--config")
+        .arg(&global)
+        .args(["validate", "acme"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+}
+
+#[test]
+fn plugin_add_source_usage_errors() {
+    let (dir, global) = sites_env();
+    let before = std::fs::read_to_string(dir.path().join("sites/acme.toml")).unwrap();
+    let cases: Vec<Vec<&str>> = vec![
+        vec!["plugin", "add", "acme", "p@1.0", "--url", "https://e/p.zip"],
+        vec!["plugin", "add", "acme", "p@1.0", "--path", "/srv/p"],
+        vec!["plugin", "add", "acme", "p", "--url", "http://e/p.zip"],
+        vec!["plugin", "add", "acme", "p", "--path", "/nonexistent/p"],
+        vec![
+            "plugin",
+            "add",
+            "acme",
+            "p",
+            "--url",
+            "https://e/p.zip",
+            "--path",
+            "/srv/p",
+        ],
+    ];
+    for args in cases {
+        let out = iwp()
+            .arg("--config")
+            .arg(&global)
+            .args(&args)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+    }
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("sites/acme.toml")).unwrap(),
+        before
+    );
+}
+
+#[test]
 fn validate_ok_and_collision() {
     let (dir, global) = sites_env();
     let out = iwp()

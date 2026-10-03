@@ -3,19 +3,52 @@
 use super::*;
 
 pub(super) fn package(
-    sites_dir: &std::path::Path,
+    global: &GlobalConfig,
     kind: PackageKind,
     action: PackageAction,
 ) -> Result<ExitCode> {
+    let sites_dir = &global.sites_dir;
     let usage = |e: anyhow::Error| anyhow::Error::new(UsageError(format!("{e:#}")));
     match action {
-        PackageAction::Add { site, spec } => {
+        PackageAction::Add {
+            site,
+            spec,
+            url,
+            path: dir,
+        } => {
             let path = site_path(sites_dir, &site)?;
             let (slug, version) = parse_spec(&spec).map_err(usage)?;
-            let version = version.ok_or_else(|| {
-                UsageError(format!("{} add needs <slug>@<version>", kind.table()))
-            })?;
-            edit_site_file(&path, |d| d.add(kind, &slug, &version)).map_err(usage)?;
+            let source = match (url, dir) {
+                (Some(url), _) => Some(crate::config::Source::Url { url }),
+                (None, Some(path)) => Some(crate::config::Source::Path { path }),
+                (None, None) => None,
+            };
+            match (source, version) {
+                (Some(_), Some(_)) => {
+                    return Err(UsageError(format!(
+                        "{} add with --url or --path needs <slug> without a version",
+                        kind.table()
+                    ))
+                    .into());
+                }
+                (Some(source), None) => {
+                    let fetcher = crate::fetch::net::HttpFetcher::new();
+                    let cache = crate::fetch::cache::Cache::new(&global.cache_dir);
+                    let ctx = source_ctx(global, &fetcher, &cache)?;
+                    let sha = crate::build::pin::add_source(&ctx, &path, kind, &slug, source)?;
+                    println!("pinned {}[{slug}] {sha}", kind.table());
+                }
+                (None, Some(version)) => {
+                    edit_site_file(&path, |d| d.add(kind, &slug, &version)).map_err(usage)?;
+                }
+                (None, None) => {
+                    return Err(UsageError(format!(
+                        "{} add needs <slug>@<version>, or <slug> with --url or --path",
+                        kind.table()
+                    ))
+                    .into());
+                }
+            }
         }
         PackageAction::Set { site, spec } => {
             let path = site_path(sites_dir, &site)?;
@@ -73,19 +106,27 @@ pub(super) fn render_cmd(
     Ok(ExitCode::SUCCESS)
 }
 
+fn source_ctx<'a>(
+    global: &GlobalConfig,
+    fetcher: &'a crate::fetch::net::HttpFetcher,
+    cache: &'a crate::fetch::cache::Cache,
+) -> Result<crate::build::sources::SourceCtx<'a>> {
+    Ok(crate::build::sources::SourceCtx {
+        fetcher,
+        cache,
+        tofu: std::cell::RefCell::new(crate::build::tofu::Tofu::load(
+            &global.cache_dir.join("tofu.json"),
+        )?),
+    })
+}
+
 pub(super) fn pin_cmd(global: &GlobalConfig, name: &str, slug: Option<&str>) -> Result<ExitCode> {
     let name = site_arg(name)?;
     // pin validates the site itself (a missing sha256 is the one issue it tolerates).
     let path = site_path(&global.sites_dir, name)?;
     let fetcher = crate::fetch::net::HttpFetcher::new();
     let cache = crate::fetch::cache::Cache::new(&global.cache_dir);
-    let ctx = crate::build::sources::SourceCtx {
-        fetcher: &fetcher,
-        cache: &cache,
-        tofu: std::cell::RefCell::new(crate::build::tofu::Tofu::load(
-            &global.cache_dir.join("tofu.json"),
-        )?),
-    };
+    let ctx = source_ctx(global, &fetcher, &cache)?;
     for (kind, slug, sha) in crate::build::pin::pin(&ctx, &path, slug)? {
         println!("pinned {kind}[{slug}] {sha}");
     }

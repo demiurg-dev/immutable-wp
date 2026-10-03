@@ -1,9 +1,9 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, anyhow, bail};
-use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, Value, value};
+use toml_edit::{ArrayOfTables, DocumentMut, InlineTable, Item, Table, Value, value};
 
-use crate::config::{parse_site, validate_site};
+use crate::config::{Source, parse_site, validate_site};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PackageKind {
@@ -47,6 +47,37 @@ impl SiteDocument {
     }
 
     pub fn add(&mut self, kind: PackageKind, slug: &str, version: &str) -> Result<()> {
+        let mut t = Table::new();
+        t["slug"] = value(slug);
+        t["version"] = value(version);
+        self.push(kind, slug, t)
+    }
+
+    /// Adds a pinned `url` or `path` source package.
+    pub fn add_source(
+        &mut self,
+        kind: PackageKind,
+        slug: &str,
+        source: &Source,
+        sha256: &str,
+    ) -> Result<()> {
+        let mut src = InlineTable::new();
+        match source {
+            Source::Url { url } => src.insert("url", url.as_str().into()),
+            Source::Path { path } => {
+                let path = path.to_str().context("non-UTF-8 path")?;
+                src.insert("path", path.into())
+            }
+            Source::Git { .. } => bail!("git sources are added by hand"),
+        };
+        let mut t = Table::new();
+        t["slug"] = value(slug);
+        t["source"] = value(src);
+        t["sha256"] = value(sha256);
+        self.push(kind, slug, t)
+    }
+
+    fn push(&mut self, kind: PackageKind, slug: &str, t: Table) -> Result<()> {
         if self.doc.get(kind.table()).is_none() {
             self.doc
                 .insert(kind.table(), Item::ArrayOfTables(ArrayOfTables::new()));
@@ -57,9 +88,6 @@ impl SiteDocument {
         if Self::find(aot, slug).is_some() {
             bail!("{}[{slug}] already exists; use `set`", kind.table());
         }
-        let mut t = Table::new();
-        t["slug"] = value(slug);
-        t["version"] = value(version);
         aot.push(t);
         Ok(())
     }
@@ -231,6 +259,37 @@ sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         d.remove(PackageKind::Theme, "hello-elementor").unwrap();
         assert!(!d.render().contains("[[theme]]"));
         assert!(d.remove(PackageKind::Theme, "hello-elementor").is_err());
+    }
+
+    #[test]
+    fn add_source_writes_a_pinned_url_or_path() {
+        let mut d = SiteDocument::parse(DOC).unwrap();
+        let sha = "d".repeat(64);
+        let url = Source::Url {
+            url: "https://e/prem.zip".into(),
+        };
+        let path = Source::Path {
+            path: "/srv/ours".into(),
+        };
+        d.add_source(PackageKind::Plugin, "prem", &url, &sha)
+            .unwrap();
+        d.add_source(PackageKind::Theme, "ours", &path, &sha)
+            .unwrap();
+        let out = d.render();
+        assert!(
+            out.contains("source = { url = \"https://e/prem.zip\" }")
+                && out.contains("source = { path = \"/srv/ours\" }"),
+            "{out}"
+        );
+        let s = crate::config::parse_site(&out).unwrap();
+        let p = s.plugins.last().unwrap();
+        assert_eq!((p.slug.as_str(), p.source.as_ref()), ("prem", Some(&url)));
+        assert_eq!(p.sha256.as_deref(), Some(sha.as_str()));
+        assert_eq!(s.themes[0].source.as_ref(), Some(&path));
+        assert!(
+            d.add_source(PackageKind::Plugin, "prem", &url, &sha)
+                .is_err()
+        );
     }
 
     #[test]
