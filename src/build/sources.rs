@@ -17,7 +17,7 @@ use crate::config::{Package, Source};
 use crate::fetch::archive::{ExtractLimits, extract_zip, safe_rel};
 use crate::fetch::cache::{Cache, Sha256Mismatch};
 use crate::fetch::net::Fetcher;
-use crate::fetch::wporg::{WpOrg, plugin_zip_url, theme_zip_url};
+use crate::fetch::wporg::{WpOrg, theme_zip_url};
 use crate::hash::{list_files, sha256_file, sha256_hex, tree_hash};
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -224,11 +224,11 @@ pub fn stage_package(
             let w = ctx.wporg();
             match kind {
                 PackageKind::Plugin => {
-                    let url = plugin_zip_url(slug, ver);
+                    let url = w.resolve_plugin_zip_url(slug, ver)?;
                     let sums = w.plugin_checksums(slug, ver)?;
                     let mut from_cache = ctx.cache.has_url(&url);
                     loop {
-                        let zip = w.plugin_zip(slug, ver)?;
+                        let zip = w.plugin_zip(slug, ver, &url)?;
                         let r = verify_wporg_plugin(&zip, &sums, dest, slug, &what);
                         // A cached zip is never trusted: any verification failure or any file
                         // wordpress.org does not list triggers one fresh download and a full re-run.
@@ -439,7 +439,9 @@ mod tests {
     use super::*;
     use crate::config::edit::PackageKind;
     use crate::config::{Package, Source};
-    use crate::fetch::wporg::{plugin_checksums_url, plugin_zip_url, theme_zip_url};
+    use crate::fetch::wporg::{
+        plugin_checksums_url, plugin_info_url, plugin_zip_url, theme_zip_url,
+    };
     use crate::hash::{sha256_hex, tree_hash};
     use crate::testutil::{FakeFetcher, make_zip, tmp};
 
@@ -510,6 +512,35 @@ mod tests {
         assert_eq!(s.files_verified, 2);
         assert_eq!(s.unlisted_files, vec!["readme.txt".to_string()]);
         assert!(dest.join("build/a.js").is_file());
+    }
+
+    #[test]
+    fn wporg_plugin_zip_is_named_after_the_svn_tag() {
+        // The site file pins the header version, which keys the checksums; the zip carries the
+        // SVN tag, which wordpress.org may spell differently (`1.0` for a header `1.0.0`).
+        let (zip, sums) = plugin_fixture();
+        let tag_url = plugin_zip_url("gt", "1.0");
+        let f = FakeFetcher::new()
+            .with(
+                &plugin_info_url("gt"),
+                format!(r#"{{"slug":"gt","version":"1.0.0","versions":{{"1.0":"{tag_url}"}}}}"#),
+            )
+            .with(&tag_url, zip.clone())
+            .with(&plugin_checksums_url("gt", "1.0.0"), sums);
+        let t = tmp();
+        let cache = Cache::new(&t.path().join("cache"));
+        let c = ctx(&f, &cache, &t.path().join("tofu.json"));
+        let dest = t.path().join("plugins/gt");
+        let s = stage_package(&c, PackageKind::Plugin, &wp("gt", "1.0.0"), &dest).unwrap();
+        assert_eq!(
+            s.origin,
+            Origin::Wporg {
+                version: "1.0.0".into()
+            }
+        );
+        assert_eq!(s.sha256, sha256_hex(&zip));
+        assert!(dest.join("gt.php").is_file());
+        assert!(!f.calls().contains(&plugin_zip_url("gt", "1.0.0")));
     }
 
     #[test]

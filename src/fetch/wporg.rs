@@ -12,9 +12,13 @@ use crate::fetch::net::Fetcher;
 
 pub const CORE_VERSION_CHECK_URL: &str = "https://api.wordpress.org/core/version-check/1.7/";
 const TRANSLATION_PREFIX: &str = "https://downloads.wordpress.org/translation/";
+const PLUGIN_ZIP_PREFIX: &str = "https://downloads.wordpress.org/plugin/";
 
+/// The conventional zip name: the SVN tag spelled like `ver`. wordpress.org may tag a
+/// release differently from its plugin header (`3.9` for a header `3.9.0`, `2.1.0` for
+/// `2.1`); `WpOrg::resolve_plugin_zip_url` looks the tag up.
 pub fn plugin_zip_url(slug: &str, ver: &str) -> String {
-    format!("https://downloads.wordpress.org/plugin/{slug}.{ver}.zip")
+    format!("{PLUGIN_ZIP_PREFIX}{slug}.{ver}.zip")
 }
 pub fn theme_zip_url(slug: &str, ver: &str) -> String {
     format!("https://downloads.wordpress.org/theme/{slug}.{ver}.zip")
@@ -76,6 +80,20 @@ pub struct Info {
     pub requires_php: Option<String>,
     /// Minimum WordPress version.
     pub requires: Option<String>,
+    /// Plugins only: SVN tag -> zip URL for every release wordpress.org still serves.
+    pub versions: BTreeMap<String, String>,
+}
+
+/// Whether two version strings name the same release: `3.9` and `3.9.0` do.
+fn same_version(a: &str, b: &str) -> bool {
+    let trim = |v: &str| {
+        let mut parts: Vec<&str> = v.split('.').collect();
+        while parts.len() > 1 && parts.last() == Some(&"0") {
+            parts.pop();
+        }
+        parts.join(".")
+    };
+    a == b || trim(a) == trim(b)
 }
 
 #[derive(Deserialize)]
@@ -106,9 +124,32 @@ pub struct WpOrg<'a> {
 }
 
 impl WpOrg<'_> {
-    pub fn plugin_zip(&self, slug: &str, ver: &str) -> Result<Vec<u8>> {
+    /// The zip of plugin `slug` at header version `ver`: the release in the plugin info
+    /// `versions` map that names that version, exactly or spelled with a different number
+    /// of trailing `.0`s. Falls back to the conventional name when the lookup fails or the
+    /// version is not listed, so the download itself reports what is wrong.
+    pub fn resolve_plugin_zip_url(&self, slug: &str, ver: &str) -> Result<String> {
+        let fallback = plugin_zip_url(slug, ver);
+        let Ok(info) = self.plugin_info(slug) else {
+            return Ok(fallback);
+        };
+        let url = match info.versions.get(ver) {
+            Some(u) => u,
+            None => match info.versions.iter().find(|(tag, _)| same_version(tag, ver)) {
+                Some((_, u)) => u,
+                None => return Ok(fallback),
+            },
+        };
+        if !url.starts_with(PLUGIN_ZIP_PREFIX) {
+            bail!("plugin {slug}@{ver}: release {url} is not on downloads.wordpress.org");
+        }
+        Ok(url.clone())
+    }
+
+    /// `url` is what `resolve_plugin_zip_url` returned for `slug@ver`.
+    pub fn plugin_zip(&self, slug: &str, ver: &str, url: &str) -> Result<Vec<u8>> {
         self.cache
-            .get_url(self.fetcher, &plugin_zip_url(slug, ver))
+            .get_url(self.fetcher, url)
             .with_context(|| format!("plugin {slug}@{ver}"))
     }
 
@@ -205,11 +246,21 @@ impl WpOrg<'_> {
         let v: Value = serde_json::from_slice(&self.fetcher.get(url)?)
             .with_context(|| format!("parsing {url}"))?;
         let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
+        let versions = v
+            .get("versions")
+            .and_then(Value::as_object)
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default();
         Ok(Info {
             version: s("version").with_context(|| format!("{url}: no version"))?,
             tested: s("tested"),
             requires_php: s("requires_php"),
             requires: s("requires"),
+            versions,
         })
     }
 
@@ -445,5 +496,59 @@ mod tests {
         let f = FakeFetcher::new().with(CORE_VERSION_CHECK_URL, r#"{"offers":[]}"#);
         let err = client(&f, &c).core_latest().unwrap_err();
         assert!(format!("{err:#}").contains("no offers"), "{err:#}");
+    }
+
+    #[test]
+    fn plugin_zip_url_follows_the_versions_map() {
+        // wordpress.org names a plugin zip after its SVN tag, which may spell the version
+        // differently from the plugin header that `version` reports and the site file pins.
+        let info = |slug: &str, versions: &str| {
+            format!(r#"{{"slug":"{slug}","version":"9","versions":{{{versions}}}}}"#)
+        };
+        let f = FakeFetcher::new()
+            .with(
+                &plugin_info_url("polylang"),
+                info(
+                    "polylang",
+                    r#""3.8.9":"https://downloads.wordpress.org/plugin/polylang.3.8.9.zip","3.9":"https://downloads.wordpress.org/plugin/polylang.3.9.zip","trunk":"https://downloads.wordpress.org/plugin/polylang.zip""#,
+                ),
+            )
+            .with(
+                &plugin_info_url("han"),
+                info("han", r#""2.1.0":"https://downloads.wordpress.org/plugin/han.2.1.0.zip""#),
+            )
+            .with(
+                &plugin_info_url("evil"),
+                info("evil", r#""1.0":"https://evil.example/evil.1.0.zip""#),
+            )
+            .with(&plugin_info_url("nolist"), r#"{"slug":"nolist","version":"1.0"}"#);
+        let d = tmp();
+        let c = Cache::new(d.path());
+        let w = client(&f, &c);
+        // header 3.9.0, tag 3.9
+        assert_eq!(
+            w.resolve_plugin_zip_url("polylang", "3.9.0").unwrap(),
+            "https://downloads.wordpress.org/plugin/polylang.3.9.zip"
+        );
+        // header 2.1, tag 2.1.0
+        assert_eq!(
+            w.resolve_plugin_zip_url("han", "2.1").unwrap(),
+            "https://downloads.wordpress.org/plugin/han.2.1.0.zip"
+        );
+        // an exact tag is taken as is
+        assert_eq!(
+            w.resolve_plugin_zip_url("polylang", "3.8.9").unwrap(),
+            plugin_zip_url("polylang", "3.8.9")
+        );
+        // not listed, no list, or no plugin info at all: the conventional name
+        for (slug, ver) in [("polylang", "3.7"), ("nolist", "1.0"), ("unknown", "1.0")] {
+            assert_eq!(
+                w.resolve_plugin_zip_url(slug, ver).unwrap(),
+                plugin_zip_url(slug, ver),
+                "{slug}@{ver}"
+            );
+        }
+        // never download from anywhere but downloads.wordpress.org
+        assert!(w.resolve_plugin_zip_url("evil", "1.0").is_err());
     }
 }

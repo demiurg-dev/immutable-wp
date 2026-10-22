@@ -26,7 +26,8 @@ fn live_wordpress_org_endpoints() {
         "{:?}",
         sums.keys().take(5).collect::<Vec<_>>()
     );
-    let zip = w.plugin_zip("gutena-tabs", "1.0.11").unwrap();
+    let url = w.resolve_plugin_zip_url("gutena-tabs", "1.0.11").unwrap();
+    let zip = w.plugin_zip("gutena-tabs", "1.0.11", &url).unwrap();
     let out = d.path().join("gt");
     std::fs::create_dir(&out).unwrap();
     let top = iwp::fetch::archive::extract_zip(&zip, &out, &Default::default()).unwrap();
@@ -50,5 +51,15 @@ fn live_wordpress_org_endpoints() {
             .any(|t| t.language == "hr")
     );
     assert!(!w.plugin_info("gutena-tabs").unwrap().version.is_empty());
+    // Releases whose SVN tag spells the version differently from the plugin header.
+    assert_eq!(
+        w.resolve_plugin_zip_url("polylang", "3.9.0").unwrap(),
+        "https://downloads.wordpress.org/plugin/polylang.3.9.zip"
+    );
+    assert_eq!(
+        w.resolve_plugin_zip_url("hide-admin-notices", "2.1")
+            .unwrap(),
+        "https://downloads.wordpress.org/plugin/hide-admin-notices.2.1.0.zip"
+    );
     assert!(!w.core_latest().unwrap().is_empty());
 }

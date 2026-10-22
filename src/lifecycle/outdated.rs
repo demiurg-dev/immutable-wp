@@ -120,6 +120,7 @@ pub fn outdated(w: &WpOrg, site: &Site) -> Vec<OutdatedRow> {
             tested: None,
             requires_php: None,
             requires: None,
+            versions: Default::default(),
         }),
     )];
     for (kind, list) in [("plugin", &site.plugins), ("theme", &site.themes)] {
