@@ -77,7 +77,7 @@ pub fn label_site(host: &dyn Host, g: &GlobalConfig, site: &Site) -> Result<bool
     }
     let level = Identity::for_site(site.id, g.id_offset).selinux_level();
     for rule in fcontext_rules(g, site) {
-        let cmd = |op: &str| {
+        let cmd = |op: &str, spec: &str| {
             Cmd::new("semanage").args([
                 "fcontext",
                 op,
@@ -85,20 +85,10 @@ pub fn label_site(host: &dyn Host, g: &GlobalConfig, site: &Site) -> Result<bool
                 "container_file_t",
                 "-r",
                 &level,
-                &rule,
+                spec,
             ])
         };
-        let out = host.run(&cmd("-a"))?;
-        if out.status != 0 {
-            if String::from_utf8_lossy(&out.stderr).contains("already defined") {
-                run_ok(host, &cmd("-m"))?;
-            } else {
-                bail!(
-                    "semanage fcontext -a {rule}: {}",
-                    String::from_utf8_lossy(&out.stderr).trim()
-                );
-            }
-        }
+        add_or_modify(host, &rule, &cmd)?;
     }
     let base = site.base_dir(g);
     run_ok(
@@ -110,6 +100,43 @@ pub fn label_site(host: &dyn Host, g: &GlobalConfig, site: &Site) -> Result<bool
         run_ok(host, &Cmd::new("restorecon").args(["-RF", &run_dir]))?;
     }
     Ok(true)
+}
+
+/// `semanage fcontext -a`, falling back to `-m` when the spec exists. Which spelling of the
+/// runtime directory the policy accepts depends on the direction of its `/run` <-> `/var/run`
+/// equivalency rule (Rocky 9 wants `/var/run`, Rocky 10 wants `/run`); when semanage rejects
+/// one spelling because of that rule, the other is tried.
+fn add_or_modify(host: &dyn Host, rule: &str, cmd: &dyn Fn(&str, &str) -> Cmd) -> Result<()> {
+    let out = host.run(&cmd("-a", rule))?;
+    if out.status == 0 {
+        return Ok(());
+    }
+    let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    if err.contains("already defined") {
+        run_ok(host, &cmd("-m", rule))?;
+        return Ok(());
+    }
+    if err.contains("equivalency rule") {
+        let alt = if let Some(rest) = rule.strip_prefix("/var/run/") {
+            Some(format!("/run/{rest}"))
+        } else {
+            rule.strip_prefix("/run/")
+                .map(|rest| format!("/var/run/{rest}"))
+        };
+        if let Some(alt) = alt {
+            let out = host.run(&cmd("-a", &alt))?;
+            if out.status == 0 {
+                return Ok(());
+            }
+            let err2 = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            if err2.contains("already defined") {
+                run_ok(host, &cmd("-m", &alt))?;
+                return Ok(());
+            }
+            bail!("semanage fcontext -a {alt}: {err2}");
+        }
+    }
+    bail!("semanage fcontext -a {rule}: {err}");
 }
 
 pub fn relabel(host: &dyn Host, paths: &[&Path]) -> Result<()> {
@@ -206,6 +233,27 @@ mod tests {
             )
         );
         assert!(cmds.contains(&"restorecon -RF /var/www/vhosts/example.org/iwp".to_string()));
+    }
+
+    #[test]
+    fn label_site_retries_run_dir_with_other_spelling_on_equivalency_error() {
+        // Rocky 10: the policy's rule is `/var/run /run`, so semanage rejects /var/run specs.
+        let h = RecordingHost::new(true).respond(
+            "semanage fcontext -a -t container_file_t -r s0:c3,c515 /var/run/iwp/acme(/.*)?",
+            1,
+            "",
+            "ValueError: File spec /var/run/iwp/acme(/.*)? conflicts with equivalency rule '/var/run /run'; Try adding '/run/iwp/acme(/.*)?' instead",
+        );
+        assert!(label_site(&h, &GlobalConfig::default(), &acme()).unwrap());
+        let cmds: Vec<String> = h.calls().iter().map(ToString::to_string).collect();
+        assert!(
+            cmds.contains(
+                &"semanage fcontext -a -t container_file_t -r s0:c3,c515 /run/iwp/acme(/.*)?"
+                    .to_string()
+            ),
+            "{cmds:#?}"
+        );
+        assert!(!cmds.iter().any(|c| c.starts_with("semanage fcontext -m")));
     }
 
     #[test]
