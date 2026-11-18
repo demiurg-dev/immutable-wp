@@ -397,6 +397,18 @@ mod tests {
     }
 
     #[test]
+    fn nginx_body_size_is_server_level() {
+        // REST uploads (POST /wp-json/wp/v2/media) match `location /` and are only then
+        // rewritten to /index.php. nginx checks the body size in the first matched location,
+        // so a limit set only in the PHP locations leaves REST at the 1M default (413).
+        let out = acme();
+        let n = &out["nginx/acme.conf"];
+        let limit = pos(n, "client_max_body_size 256M;\n");
+        assert!(limit < pos(n, "\nlocation "), "{n}");
+        assert!(!out["nginx/acme.fastcgi.conf"].contains("client_max_body_size"));
+    }
+
+    #[test]
     fn fastcgi_params_file() {
         let f = &acme()["nginx/acme.fastcgi.conf"];
         assert!(f.contains("fastcgi_pass unix:/run/iwp/acme/php.sock;"));

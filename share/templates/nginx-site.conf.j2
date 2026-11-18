@@ -8,6 +8,10 @@ index index.html;
 # follows a symlink whose owner also owns its target: the release's own links into shared/
 # (owned by the site's UID, like their targets) work, links to anyone else's files do not.
 disable_symlinks if_not_owner from=$document_root;
+# Request body limit for the whole site, not only the PHP locations: REST uploads
+# (POST /wp-json/wp/v2/media) match "location /" first and nginx checks the size there.
+# Do not set client_max_body_size in the including server {} block as well (nginx -t: duplicate).
+client_max_body_size {{ php.post_max_size }};
 
 # 1. Hidden files, core docs, config, logs and dumps are never served.
 location ~ /\.(?!well-known/) { deny all; }
