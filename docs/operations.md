@@ -319,8 +319,12 @@ versions are live, writes them into the site file (comments kept).
   whose image changed is redeployed even when no version changed; this is how PHP and OS
   security fixes reach the sites.
 - **Not covered:** `source` packages (path, git, url; typically premium or custom plugins).
-  Update those by hand and `iwp pin`. Plugins removed from wordpress.org show up as
-  `lookup failed` and make the run exit 1.
+  Update those by hand and `iwp pin`. A plugin or theme wordpress.org has *closed* (often
+  temporarily, pending a review) is printed as `warning: … closed on wordpress.org since …`
+  and does not fail the run: it gets no updates until it reopens, and the pinned version stays
+  deployed. Find out why it was closed; `hold = true` on it silences the warning. Any other
+  failed lookup (a slug wordpress.org does not know, a network error) is printed as
+  `lookup failed` and makes the run exit 1.
 - **Updates that are held back become failures after a deadline.** An update iwp does not take
   on its own is printed as `skipped …`: a plugin or theme major under `plugins = "minor"`, a
   new core branch under `core = "minor"`, or a version that needs a newer PHP or WordPress.

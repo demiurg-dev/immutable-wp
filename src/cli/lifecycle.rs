@@ -468,6 +468,9 @@ pub(super) fn update_cmd(
             println!("{n}: lookup failed: {e}");
             failed = true;
         }
+        for w in &plan.warnings {
+            println!("{n}: warning: {w}");
+        }
         for o in &plan.overdue {
             println!("{n}: overdue: {o}");
             failed = true;

@@ -103,6 +103,7 @@ pub(super) fn outdated_cmd(global: &GlobalConfig, name: &str, json: bool) -> Res
                 }
                 Status::UpToDate => println!("{head} {} up to date", r.current),
                 Status::Pinned => println!("{head} pinned source"),
+                Status::Closed(m) => println!("{head} {} {m}", r.current),
                 Status::Error(m) => println!("{head} error: {m}"),
             }
         }

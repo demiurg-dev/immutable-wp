@@ -38,6 +38,9 @@ pub struct Plan {
     pub skipped: Vec<String>,
     /// Lookups that failed; the site may be missing updates.
     pub errors: Vec<String>,
+    /// Not errors, but worth a look: packages wordpress.org has closed (no updates or
+    /// downloads until it reopens them; the pinned version stays deployed).
+    pub warnings: Vec<String>,
     /// What each `skipped` entry holds back: ("plugin <slug>" or "core wordpress", version).
     pub blocked: Vec<(String, String)>,
     /// Skipped updates and unreviewed `source` packages past their deadline ([update]
@@ -176,6 +179,11 @@ pub fn plan(w: &WpOrg, site: &Site) -> Plan {
                 PackageKind::Theme => w.theme_info(&pkg.slug),
             };
             match info {
+                Err(e) if e.downcast_ref::<crate::fetch::wporg::Closed>().is_some() => {
+                    p.warnings.push(format!(
+                        "{what} {from}: {e}; no updates until it reopens, the pinned version stays deployed (check why it was closed; set hold = true on it to stop this warning)"
+                    ))
+                }
                 Err(e) => p.errors.push(format!("{what}: {e:#}")),
                 Ok(i) if version_cmp(&i.version, from) != Ordering::Greater => {}
                 Ok(i) => {
@@ -676,6 +684,38 @@ version = "3.5"
         // "7.1" is the first release of the 7.1 branch.
         assert_eq!(pick("7.1", CorePolicy::Minor).as_deref(), Some("7.1.10"));
         assert_eq!(pick("6.0.1", CorePolicy::Minor), None);
+    }
+
+    #[test]
+    fn closed_package_is_a_warning_not_a_lookup_failure() {
+        let site = parse_site(TEXT).unwrap();
+        let f = fetcher().with_status(
+            &plugin_info_url("gone"),
+            404,
+            r#"{"error":"closed","slug":"gone","closed":true,"closed_date":"2026-11-11","reason":false,"reason_text":false}"#,
+        );
+        let d = tmp();
+        let c = Cache::new(d.path());
+        let p = plan(
+            &WpOrg {
+                fetcher: &f,
+                cache: &c,
+            },
+            &site,
+        );
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+        assert_eq!(p.warnings.len(), 1, "{:?}", p.warnings);
+        assert!(
+            p.warnings[0].starts_with("plugin gone 1.0: closed on wordpress.org since 2026-11-11;"),
+            "{}",
+            p.warnings[0]
+        );
+        // The other packages are still planned as usual.
+        assert!(
+            p.changes.contains(&ch("plugin", "p", "1.0", "1.1")),
+            "{:?}",
+            p.changes
+        );
     }
 
     #[test]

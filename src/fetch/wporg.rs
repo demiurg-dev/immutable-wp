@@ -84,6 +84,15 @@ pub struct Info {
     pub versions: BTreeMap<String, String>,
 }
 
+/// A plugin or theme wordpress.org has closed: the info API answers 404 with
+/// `{"error":"closed",...}` and offers neither versions nor downloads until it reopens.
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+#[error("closed on wordpress.org{}{}", .since.as_ref().map(|d| format!(" since {d}")).unwrap_or_default(), .reason.as_ref().map(|r| format!(" ({r})")).unwrap_or_default())]
+pub struct Closed {
+    pub since: Option<String>,
+    pub reason: Option<String>,
+}
+
 /// Whether two version strings name the same release: `3.9` and `3.9.0` do.
 fn same_version(a: &str, b: &str) -> bool {
     let trim = |v: &str| {
@@ -243,8 +252,25 @@ impl WpOrg<'_> {
     }
 
     fn info(&self, url: &str) -> Result<Info> {
-        let v: Value = serde_json::from_slice(&self.fetcher.get(url)?)
-            .with_context(|| format!("parsing {url}"))?;
+        let (status, body) = self.fetcher.get_with_status(url)?;
+        if !(200..300).contains(&status) {
+            let v: Option<Value> = serde_json::from_slice(&body).ok();
+            let field = |k: &str| {
+                v.as_ref()
+                    .and_then(|v| v.get(k))
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+            };
+            if field("error").as_deref() == Some("closed") {
+                return Err(anyhow::Error::new(Closed {
+                    since: field("closed_date"),
+                    reason: field("reason_text"),
+                }));
+            }
+            bail!("GET {url}: http status: {status}");
+        }
+        let v: Value = serde_json::from_slice(&body).with_context(|| format!("parsing {url}"))?;
         let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
         let versions = v
             .get("versions")
@@ -436,6 +462,35 @@ mod tests {
             plugin_info_url("x"),
             "https://api.wordpress.org/plugins/info/1.2/?action=plugin_information&request%5Bslug%5D=x&request%5Bfields%5D%5Bsections%5D=0"
         );
+    }
+
+    #[test]
+    fn closed_plugin_is_its_own_error() {
+        let f = FakeFetcher::new()
+            .with_status(
+                &plugin_info_url("shut"),
+                404,
+                r#"{"error":"closed","name":"Shut","slug":"shut","description":"This plugin has been closed as of November 11, 2026 and is not available for download.","closed":true,"closed_date":"2026-11-11","reason":false,"reason_text":false}"#,
+            )
+            .with_status(&plugin_info_url("broken"), 503, "<html>busy</html>");
+        let d = tmp();
+        let c = Cache::new(d.path());
+        let w = client(&f, &c);
+        let e = w.plugin_info("shut").unwrap_err();
+        assert_eq!(
+            e.downcast_ref::<Closed>(),
+            Some(&Closed {
+                since: Some("2026-11-11".into()),
+                reason: None
+            })
+        );
+        assert_eq!(e.to_string(), "closed on wordpress.org since 2026-11-11");
+        let e = w.plugin_info("broken").unwrap_err();
+        assert!(e.downcast_ref::<Closed>().is_none());
+        assert!(e.to_string().contains("http status: 503"), "{e}");
+        // Unknown slugs still fail as before, not as closed.
+        let e = w.plugin_info("missing").unwrap_err();
+        assert!(e.downcast_ref::<Closed>().is_none(), "{e:#}");
     }
 
     #[test]

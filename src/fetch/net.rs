@@ -8,6 +8,12 @@ pub const MAX_DOWNLOAD_BYTES: u64 = 1 << 30;
 
 pub trait Fetcher {
     fn get(&self, url: &str) -> Result<Vec<u8>>;
+
+    /// Like `get`, but an HTTP error status is returned with its body instead of failing:
+    /// some APIs explain an error in it (the wordpress.org info API's 404 for a closed plugin).
+    fn get_with_status(&self, url: &str) -> Result<(u16, Vec<u8>)> {
+        self.get(url).map(|b| (200, b))
+    }
 }
 
 /// HTTPS-only fetcher. `https_only(true)` is enforced by ureq on every redirect hop,
@@ -41,21 +47,37 @@ impl Default for HttpFetcher {
     }
 }
 
-impl Fetcher for HttpFetcher {
-    fn get(&self, url: &str) -> Result<Vec<u8>> {
+impl HttpFetcher {
+    fn fetch(&self, url: &str, status_as_error: bool) -> Result<(u16, Vec<u8>)> {
         if !url.starts_with("https://") {
             bail!("refusing non-https URL {url}");
         }
         let mut resp = self
             .agent
             .get(url)
+            .config()
+            .http_status_as_error(status_as_error)
+            .build()
             .call()
             .with_context(|| format!("GET {url}"))?;
-        resp.body_mut()
+        let status = resp.status().as_u16();
+        let body = resp
+            .body_mut()
             .with_config()
             .limit(MAX_DOWNLOAD_BYTES)
             .read_to_vec()
-            .with_context(|| format!("reading body of {url}"))
+            .with_context(|| format!("reading body of {url}"))?;
+        Ok((status, body))
+    }
+}
+
+impl Fetcher for HttpFetcher {
+    fn get(&self, url: &str) -> Result<Vec<u8>> {
+        self.fetch(url, true).map(|(_, b)| b)
+    }
+
+    fn get_with_status(&self, url: &str) -> Result<(u16, Vec<u8>)> {
+        self.fetch(url, false)
     }
 }
 #[cfg(test)]

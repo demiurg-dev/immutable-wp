@@ -44,6 +44,7 @@ pub fn make_zip_with_symlink(name: &str, target: &str) -> Vec<u8> {
 #[derive(Default)]
 pub struct FakeFetcher {
     responses: BTreeMap<String, Vec<u8>>,
+    statuses: BTreeMap<String, u16>,
     calls: RefCell<Vec<String>>,
 }
 
@@ -55,6 +56,11 @@ impl FakeFetcher {
         self.responses.insert(url.to_string(), body.into());
         self
     }
+    /// A response with an HTTP error status: `get` fails on it, `get_with_status` returns it.
+    pub fn with_status(mut self, url: &str, status: u16, body: impl Into<Vec<u8>>) -> Self {
+        self.statuses.insert(url.to_string(), status);
+        self.with(url, body)
+    }
     pub fn calls(&self) -> Vec<String> {
         self.calls.borrow().clone()
     }
@@ -62,10 +68,21 @@ impl FakeFetcher {
 
 impl crate::fetch::net::Fetcher for FakeFetcher {
     fn get(&self, url: &str) -> anyhow::Result<Vec<u8>> {
+        match self.get_with_status(url)? {
+            (200, body) => Ok(body),
+            (status, _) => {
+                Err(anyhow::Error::new(ureq::Error::StatusCode(status))
+                    .context(format!("GET {url}")))
+            }
+        }
+    }
+
+    fn get_with_status(&self, url: &str) -> anyhow::Result<(u16, Vec<u8>)> {
         self.calls.borrow_mut().push(url.to_string());
-        self.responses.get(url).cloned().ok_or_else(|| {
+        let body = self.responses.get(url).cloned().ok_or_else(|| {
             anyhow::Error::new(ureq::Error::StatusCode(404)).context(format!("GET {url}"))
-        })
+        })?;
+        Ok((self.statuses.get(url).copied().unwrap_or(200), body))
     }
 }
 

@@ -38,6 +38,8 @@ pub enum Status {
     UpToDate,
     Outdated,
     Pinned,
+    /// Closed on wordpress.org: no updates or downloads until it reopens. Not an error.
+    Closed(String),
     Error(String),
 }
 
@@ -47,6 +49,7 @@ impl Status {
             Status::UpToDate => "uptodate",
             Status::Outdated => "outdated",
             Status::Pinned => "pinned",
+            Status::Closed(_) => "closed",
             Status::Error(_) => "error",
         }
     }
@@ -63,10 +66,10 @@ pub struct OutdatedRow {
 }
 
 // Manual impl: serde cannot flatten a newtype-variant enum into a struct cleanly, and the
-// `error` key must only appear for Status::Error.
+// `error` key must only appear for Status::Error (and `closed` for Status::Closed).
 impl Serialize for OutdatedRow {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        let n = if matches!(self.status, Status::Error(_)) {
+        let n = if matches!(self.status, Status::Error(_) | Status::Closed(_)) {
             7
         } else {
             6
@@ -78,8 +81,10 @@ impl Serialize for OutdatedRow {
         st.serialize_field("latest", &self.latest)?;
         st.serialize_field("tested", &self.tested)?;
         st.serialize_field("status", self.status.as_str())?;
-        if let Status::Error(m) = &self.status {
-            st.serialize_field("error", m)?;
+        match &self.status {
+            Status::Error(m) => st.serialize_field("error", m)?,
+            Status::Closed(m) => st.serialize_field("closed", m)?,
+            _ => {}
         }
         st.end()
     }
@@ -105,7 +110,11 @@ fn row(kind: &str, slug: &str, current: &str, info: anyhow::Result<Info>) -> Out
             current: current.into(),
             latest: None,
             tested: None,
-            status: Status::Error(format!("{e:#}")),
+            status: if e.downcast_ref::<crate::fetch::wporg::Closed>().is_some() {
+                Status::Closed(e.to_string())
+            } else {
+                Status::Error(format!("{e:#}"))
+            },
         },
     }
 }
@@ -175,6 +184,23 @@ mod tests {
         let u = serde_json::to_value(r(Status::UpToDate)).unwrap();
         assert_eq!(u["status"], "uptodate");
         assert!(u.get("error").is_none());
+    }
+
+    #[test]
+    fn closed_package_row_is_not_an_error() {
+        let closed = crate::fetch::wporg::Closed {
+            since: Some("2026-11-11".into()),
+            reason: None,
+        };
+        let r = row("plugin", "x", "2.0", Err(anyhow::Error::new(closed)));
+        assert_eq!(
+            r.status,
+            Status::Closed("closed on wordpress.org since 2026-11-11".into())
+        );
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["status"], "closed");
+        assert_eq!(v["closed"], "closed on wordpress.org since 2026-11-11");
+        assert!(v.get("error").is_none());
     }
 
     #[test]
